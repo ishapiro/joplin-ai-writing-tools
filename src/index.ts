@@ -12,21 +12,20 @@ enum SettingItemType {
 
 // Toolbar button location enum
 enum ToolbarButtonLocation {
-  NoteToolbar = 1,
-  EditorToolbar = 2
+  NoteToolbar = 'noteToolbar',
+  EditorToolbar = 'editorToolbar'
 }
 
-// Note: MenuItemLocation should be imported from 'api/types' but we'll define it here for now
-// In a proper setup, you would import it like: import { MenuItemLocation } from 'api/types';
+// Note: MenuItemLocation values updated to match current Joplin API (strings instead of numbers)
 enum MenuItemLocation {
-  File = 1,
-  Edit = 2,
-  View = 3,
-  Note = 4,
-  Tools = 5,
-  Help = 6,
-  Context = 7,
-  EditorContextMenu = 8
+  File = 'file',
+  Edit = 'edit',
+  View = 'view',
+  Note = 'note',
+  Tools = 'tools',
+  Help = 'help',
+  Context = 'context',
+  EditorContextMenu = 'editorContextMenu'
 }
 
 // Type definitions for our plugin
@@ -474,15 +473,14 @@ Always optimize your responses so they are immediately useful to a busy executiv
     // Get available models from storage
     let availableModels: ModelInfo[] = [];
     try {
-      const pluginId = sanitizeDataKey('com.cogitations.ai-writing-toolkit');
-      const modelsListKey = sanitizeDataKey('models_list');
-      console.debug(`[ChatGPT API] Reading models from data storage: plugins/${pluginId}/data/${modelsListKey}`);
-      const storedModels = await joplin.data.get(['plugins', pluginId, 'data', modelsListKey]);
-      if (storedModels && storedModels.value) {
-        availableModels = JSON.parse(storedModels.value);
+      console.debug(`[ChatGPT API] Reading models from settings cache`);
+      const storedModelsStr = await joplin.settings.value('modelCache');
+      if (storedModelsStr) {
+        availableModels = JSON.parse(storedModelsStr);
       }
     } catch (e) {
       // Models not in storage, use defaults
+      console.warn('Error reading model cache:', e);
     }
     
     // If no stored models, use default list
@@ -522,15 +520,19 @@ Always optimize your responses so they are immediately useful to a busy executiv
         
         // Update storage
         try {
-          const pluginId = sanitizeDataKey('com.cogitations.ai-writing-toolkit');
-          const modelsListKey = sanitizeDataKey('models_list');
+          console.debug(`[ChatGPT API] Saving models to settings cache`);
+          await joplin.settings.setValue('modelCache', JSON.stringify(freshModels));
+          
+          // Update fetched flag - we can reuse the boolean setting if needed or just rely on cache presence
           const modelsFetchedKey = sanitizeDataKey('models_fetched');
-          
-          console.debug(`[ChatGPT API] Saving models to data storage: plugins/${pluginId}/data/${modelsListKey}`);
-          
-          await joplin.data.put(['plugins', pluginId, 'data', modelsListKey], null, { value: JSON.stringify(freshModels) });
-          // Update fetched flag
-          await joplin.data.put(['plugins', pluginId, 'data', modelsFetchedKey], null, { value: 'true' });
+           // Keep this for now or remove if not needed elsewhere
+          try {
+             const pluginId = sanitizeDataKey('com.cogitations.ai-writing-toolkit');
+             await joplin.data.put(['plugins', pluginId, 'data', modelsFetchedKey], null, { value: 'true' });
+          } catch (e) {
+              // Ignore data put error for now as we have the setting cache
+          }
+
           console.info('Updated model cache with fresh list');
         } catch (e) {
           console.warn('Failed to update model storage:', e);
@@ -886,14 +888,12 @@ joplin.plugins.register({
       // ===== LOAD MODELS FOR SETTINGS DROPDOWN =====
       // Try to load stored models for the settings dropdown
       let modelsForSettings: ModelInfo[] = [];
-      const settingsModelsKey = sanitizeDataKey('models_list');
-      // pluginDataPath is defined in scope above or needs to be defined once
       
       try {
-        console.debug(`[onStart] Reading models from data storage: plugins/${pluginDataPath}/data/${settingsModelsKey}`);
-        const storedModels = await joplin.data.get(['plugins', pluginDataPath, 'data', settingsModelsKey]);
-        if (storedModels && storedModels.value) {
-          modelsForSettings = JSON.parse(storedModels.value);
+        console.debug(`[onStart] Reading models from settings cache`);
+        const storedModelsStr = await joplin.settings.value('modelCache');
+        if (storedModelsStr) {
+          modelsForSettings = JSON.parse(storedModelsStr);
           modelsForSettings.sort((a: ModelInfo, b: ModelInfo) => b.created - a.created);
           console.info('Loaded', modelsForSettings.length, 'models for settings dropdown');
         }
@@ -971,6 +971,12 @@ joplin.plugins.register({
         });
         
         await joplin.settings.registerSettings({
+          'modelCache': {
+            value: '',
+            type: SettingItemType.String,
+            public: false,
+            label: 'Model Cache',
+          },
           'openaiApiKey': {
             value: '',
             type: SettingItemType.String,
@@ -1126,14 +1132,13 @@ joplin.plugins.register({
         if ((!currentModel || currentModel.trim() === '') || !modelUserSet) {
           // Try to get available models (from storage or fetch if needed)
           let modelsToCheck: ModelInfo[] = [];
-          const modelsListKey = sanitizeDataKey('models_list');
           
           // Check if models are already fetched
           try {
-            console.debug(`[Default Model Check] Reading models from data storage: plugins/${pluginDataPath}/data/${modelsListKey}`);
-            const storedModels = await joplin.data.get(['plugins', pluginDataPath, 'data', modelsListKey]);
-            if (storedModels && storedModels.value) {
-              modelsToCheck = JSON.parse(storedModels.value);
+            console.debug(`[Default Model Check] Reading models from settings cache`);
+            const storedModelsStr = await joplin.settings.value('modelCache');
+            if (storedModelsStr) {
+              modelsToCheck = JSON.parse(storedModelsStr);
               modelsToCheck.sort((a: ModelInfo, b: ModelInfo) => b.created - a.created);
             }
           } catch (e) {
@@ -2358,11 +2363,10 @@ Always optimize your responses so they are immediately useful to a busy executiv
       // Try to add menu items to Tools menu
       try {
         // Main AI Writing Toolkit menu item
-        // Use full enum value to be safe
-        await joplin.views.menuItems.create('com.cogitations.ai-writing-toolkit.menu.open', 'openChatGPTPanel', 5); // 5 = Tools
+        await joplin.views.menuItems.create('com.cogitations.ai-writing-toolkit.menu.open', 'openChatGPTPanel', MenuItemLocation.Tools);
         
         // Open System Prompt File menu item
-        await joplin.views.menuItems.create('com.cogitations.ai-writing-toolkit.menu.prompt', 'openSystemPromptFile', 5);
+        await joplin.views.menuItems.create('com.cogitations.ai-writing-toolkit.menu.prompt', 'openSystemPromptFile', MenuItemLocation.Tools);
         
         console.info('AI Writing Toolkit menu items added to Tools menu');
       } catch (error: any) {
