@@ -70,6 +70,12 @@ interface ChatGPTResponse {
   model?: string;
 }
 
+// Helper to sanitize keys for Joplin data storage
+// Removes any character except lowercase letters and digits
+function sanitizeDataKey(key: string): string {
+  return key.toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
 // ChatGPT API class with proper typing
 class ChatGPTAPI {
   private settings: ChatGPTAPISettings;
@@ -468,7 +474,10 @@ Always optimize your responses so they are immediately useful to a busy executiv
     // Get available models from storage
     let availableModels: ModelInfo[] = [];
     try {
-      const storedModels = await joplin.data.get(['plugins', 'com.cogitations.ai-writing-tools', 'data', 'models_list']);
+      const pluginId = sanitizeDataKey('com.cogitations.ai-writing-toolkit');
+      const modelsListKey = sanitizeDataKey('models_list');
+      console.debug(`[ChatGPT API] Reading models from data storage: plugins/${pluginId}/data/${modelsListKey}`);
+      const storedModels = await joplin.data.get(['plugins', pluginId, 'data', modelsListKey]);
       if (storedModels && storedModels.value) {
         availableModels = JSON.parse(storedModels.value);
       }
@@ -513,9 +522,15 @@ Always optimize your responses so they are immediately useful to a busy executiv
         
         // Update storage
         try {
-          await joplin.data.put(['plugins', 'com.cogitations.ai-writing-toolkit', 'data', 'models_list'], null, { value: JSON.stringify(freshModels) });
+          const pluginId = sanitizeDataKey('com.cogitations.ai-writing-toolkit');
+          const modelsListKey = sanitizeDataKey('models_list');
+          const modelsFetchedKey = sanitizeDataKey('models_fetched');
+          
+          console.debug(`[ChatGPT API] Saving models to data storage: plugins/${pluginId}/data/${modelsListKey}`);
+          
+          await joplin.data.put(['plugins', pluginId, 'data', modelsListKey], null, { value: JSON.stringify(freshModels) });
           // Update fetched flag
-          await joplin.data.put(['plugins', 'com.cogitations.ai-writing-toolkit', 'data', 'models_fetched'], null, { value: 'true' });
+          await joplin.data.put(['plugins', pluginId, 'data', modelsFetchedKey], null, { value: 'true' });
           console.info('Updated model cache with fresh list');
         } catch (e) {
           console.warn('Failed to update model storage:', e);
@@ -865,17 +880,18 @@ async function fetchAvailableModels(apiKey: string): Promise<ModelInfo[]> {
 joplin.plugins.register({
   onStart: async function() {
     console.info('AI Writing Toolkit Plugin started!');
-    const pluginDataPath = 'com.cogitations.ai-writing-toolkit';
+    const pluginDataPath = sanitizeDataKey('com.cogitations.ai-writing-toolkit');
     
     try {
       // ===== LOAD MODELS FOR SETTINGS DROPDOWN =====
       // Try to load stored models for the settings dropdown
       let modelsForSettings: ModelInfo[] = [];
-      const settingsModelsKey = 'models_list';
+      const settingsModelsKey = sanitizeDataKey('models_list');
       // pluginDataPath is defined in scope above or needs to be defined once
       
       try {
-        const storedModels = await joplin.data.get(['plugins', 'com.cogitations.ai-writing-toolkit', 'data', settingsModelsKey]);
+        console.debug(`[onStart] Reading models from data storage: plugins/${pluginDataPath}/data/${settingsModelsKey}`);
+        const storedModels = await joplin.data.get(['plugins', pluginDataPath, 'data', settingsModelsKey]);
         if (storedModels && storedModels.value) {
           modelsForSettings = JSON.parse(storedModels.value);
           modelsForSettings.sort((a: ModelInfo, b: ModelInfo) => b.created - a.created);
@@ -1110,10 +1126,11 @@ joplin.plugins.register({
         if ((!currentModel || currentModel.trim() === '') || !modelUserSet) {
           // Try to get available models (from storage or fetch if needed)
           let modelsToCheck: ModelInfo[] = [];
-          const modelsListKey = 'models_list';
+          const modelsListKey = sanitizeDataKey('models_list');
           
           // Check if models are already fetched
           try {
+            console.debug(`[Default Model Check] Reading models from data storage: plugins/${pluginDataPath}/data/${modelsListKey}`);
             const storedModels = await joplin.data.get(['plugins', pluginDataPath, 'data', modelsListKey]);
             if (storedModels && storedModels.value) {
               modelsToCheck = JSON.parse(storedModels.value);
@@ -1451,14 +1468,15 @@ Always optimize your responses so they are immediately useful to a busy executiv
 
       // ===== FETCH AVAILABLE MODELS (ONCE) =====
       let availableModels: ModelInfo[] = [];
-      const modelsFetchedKey = 'models_fetched';
-      const modelsListKey = 'models_list';
+      const modelsFetchedKey = sanitizeDataKey('models_fetched');
+      const modelsListKey = sanitizeDataKey('models_list');
       // pluginDataPath is defined at top of onStart
       
       try {
         // Check if we've already fetched models
         let modelsFetched = false;
         try {
+          console.debug(`[Fetch Models] Checking if models fetched: plugins/${pluginDataPath}/data/${modelsFetchedKey}`);
           const fetched = await joplin.data.get(['plugins', pluginDataPath, 'data', modelsFetchedKey]);
           modelsFetched = fetched && fetched.value === 'true';
         } catch (e) {
@@ -1473,6 +1491,7 @@ Always optimize your responses so they are immediately useful to a busy executiv
             availableModels = await fetchAvailableModels(apiKey);
             if (availableModels.length > 0) {
               // Store the models list (already sorted by creation date, newest first)
+              console.debug(`[Fetch Models] Saving models list to: plugins/${pluginDataPath}/data/${modelsListKey}`);
               await joplin.data.put(['plugins', pluginDataPath, 'data', modelsListKey], null, { value: JSON.stringify(availableModels) });
               // Mark as fetched
               await joplin.data.put(['plugins', pluginDataPath, 'data', modelsFetchedKey], null, { value: 'true' });
@@ -1528,7 +1547,9 @@ Always optimize your responses so they are immediately useful to a busy executiv
         }
       } catch (error: any) {
         // If data storage fails, just use default models
-        console.warn('Error accessing plugin data storage:', error.message);
+        if (error.message !== 'Not Found') {
+            console.warn('Error accessing plugin data storage:', error.message);
+        }
       }
 
       // Default model list (fallback if API fetch fails or no API key)
